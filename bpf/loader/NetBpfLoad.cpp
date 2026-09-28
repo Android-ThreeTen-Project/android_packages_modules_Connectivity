@@ -86,6 +86,13 @@ using std::vector;
 namespace android {
 namespace bpf {
 
+// Legacy ARM32 kernels with working eBPF may need the interpreter for programs
+// that their JIT cannot compile. Devices must explicitly opt in to this path.
+static bool allow32BitKernel() {
+    return isArm() && isKernel32Bit() &&
+           android::base::GetBoolProperty("ro.bpf.allow_32bit", false);
+}
+
 // This verifies the macro and the C++ api are in sync, and that they're compile time known.
 constexpr auto useLibBpf = COM_ANDROID_TETHERING_READONLY_FLAGS_USE_LIBBPF;
 static_assert(std::is_same<decltype(useLibBpf), const bool>::value, "useLibBpf must be a boolean.");
@@ -1058,8 +1065,11 @@ static int validateProg(const borrowed_fd& fd, const char* const progPinLoc) {
     ALOGI("prog %s id %d len jit:%d xlat:%d", progPinLoc, progId, jitLen, xlatLen);
 
     if (!jitLen && api_level_full >= BPFLOADER_MAINLINE_25Q2_VERSION) {
-        ALOGE("Kernel eBPF JIT failure for %s", progPinLoc);
-        return -ENOTSUP;
+        if (!allow32BitKernel()) {
+            ALOGE("Kernel eBPF JIT failure for %s", progPinLoc);
+            return -ENOTSUP;
+        }
+        ALOGW("Using the ARM32 eBPF interpreter for %s (ro.bpf.allow_32bit)", progPinLoc);
     }
     return 0;
 }
@@ -1645,8 +1655,11 @@ static int doLoad(char** argv, char * const envp[]) {
     }
 
     if (isKernel32Bit() && isAtLeast25Q2) {
-        ALOGE("Android 25Q2 requires 64 bit kernel.");
-        return 9;
+        if (!allow32BitKernel()) {
+            ALOGE("Android 25Q2 requires 64 bit kernel.");
+            return 9;
+        }
+        ALOGW("Allowing an ARM32 kernel via ro.bpf.allow_32bit.");
     }
 
     // 6.6 is highest version supported by Android V, so this is effectively W+ (sdk=36+)
